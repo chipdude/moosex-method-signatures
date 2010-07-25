@@ -15,7 +15,7 @@ use MooseX::Types::Moose qw/ArrayRef Str Maybe Object Any CodeRef Bool/;
 use MooseX::Method::Signatures::Types qw/Injections Params/;
 use aliased 'Parse::Method::Signatures::Param::Named';
 use aliased 'Parse::Method::Signatures::Param::Placeholder';
-
+use constant NAME_WRAPPED => $ENV{MXMS_NAME_WRAPPED}; # see perldoc perlvar
 use namespace::autoclean;
 
 extends 'Moose::Meta::Method';
@@ -128,25 +128,23 @@ around name => sub {
 sub _wrapped_body {
     my ($class, $self, %args) = @_;
 
-    if (exists $args{return_signature}) {
-        return sub {
+    my $actual_body;
+    exists $args{return_signature}
+      ? sub {
             my @args = ${ $self }->validate(\@_);
-            return preserve_context { ${ $self }->actual_body->(@args) }
+            $actual_body ||= ${ $self }->actual_body;
+            return preserve_context { $actual_body->(@args) }
                 after => sub {
                     if (defined (my $msg = ${ $self }->_return_type_constraint->validate(\@_))) {
                         confess $msg;
                     }
                 };
-        };
-    }
-
-    my $actual_body;
-    return sub {
-        @_ = ${ $self }->validate(\@_);
-        $actual_body ||= ${ $self }->actual_body;
-        goto &{ $actual_body };
-    };
-
+        }
+      : sub {
+            @_ = ${ $self }->validate(\@_);
+            $actual_body ||= ${ $self }->actual_body;
+            goto &{ $actual_body };
+        }
 }
 
 around wrap => sub {
@@ -162,6 +160,12 @@ around wrap => sub {
 
     my $wrapped = $class->_wrapped_body(\$self, %args);
     $self = $class->$orig($wrapped, %args, $code ? (actual_body => $code) : ());
+
+    # Assist in debugging - give a name to the wrapped code (automatic when debugging)
+    if ($code && (exists $args{name_wrapped} ? $args{name_wrapped} : (NAME_WRAPPED || ($^P & 0x13)))) {
+        no strict 'refs';
+        *{ $self->fully_qualified_name . '_' } = $code;
+    }
 
     # Vivify the type constraints so TC lookups happen before namespace::clean
     # removes them
